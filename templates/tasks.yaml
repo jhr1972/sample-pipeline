@@ -1,0 +1,344 @@
+
+
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: preparation
+spec:
+  workspaces:
+  - name: shared-workspace
+    mountPath: /mnt/
+  params:
+    - name: aws
+      description: namespace in which the service account has to be created
+      type: string
+      default: "not set"
+    - name: stage
+      description: E,T,A,P-The environment for which the service account is to be created
+      type: string
+  stepTemplate:
+    name: preparation
+    volumeMounts:
+      - mountPath: /config/config.yaml
+        name: config
+        readOnly: true
+        subPath: config.yaml
+      - mountPath: /config/secret.j2
+        name: secret
+        readOnly: true
+        subPath: secret.j2
+      - mountPath: /config/context.j2
+        name: context
+        readOnly: true
+        subPath: context.j2
+      - mountPath: /config/secretstore.j2
+        name: secretstore
+        readOnly: true
+        subPath: secretstore.j2
+    workingDir: /home/runner
+
+
+  volumes:
+  - configMap:
+      defaultMode: 420
+      name: sgconfig
+    name: config
+  - configMap:
+      defaultMode: 420
+      name: sgsecret
+    name: secret
+  - configMap:
+      defaultMode: 420
+      name: context
+    name: context
+  - configMap:
+      defaultMode: 420
+      name: secretstore
+    name: secretstore
+
+  steps:
+    - name: test-script
+      image: image-registry.openshift-image-registry.svc:5000/openshift/tools:0.3
+      imagePullPolicy: Always
+      script: |
+        #!/usr/bin/env bash
+        echo "Hello from Bash!"
+        date >> /mnt/test.txt
+        echo "Hello mnt" >> /mnt/test.txt
+        echo $(params.stage)-$(params.aws)
+        cat /config/config.yaml
+#      volumeMounts:
+#        - mountPath: /mnt/config.yaml
+#          name: config
+#          readOnly: true
+#          subPath: config.yaml
+#        - mountPath: /mnt/secret.j2
+#          name: secret
+#          readOnly: true
+#          subPath: secret.j2
+    - name: create-local-ctx
+      image: image-registry.openshift-image-registry.svc:5000/openshift/tools:0.3
+      imagePullPolicy: Always
+      script: |
+         #!/usr/bin/python3
+         import sys
+         import ruamel.yaml
+         import jinja2  
+         from kubernetes import client, config
+         import base64
+         templateLoader = jinja2.FileSystemLoader("/")
+         templateEnv = jinja2.Environment(loader=templateLoader)
+         TEMPLATE_FILE = "/config/context.j2"
+         template = templateEnv.get_template(TEMPLATE_FILE)
+         
+         cluster = {}
+         cluster["name"]="localcluster"
+         cluster["url"]="https://openshift.default.svc.cluster.local"
+         
+         with open('/run/secrets/kubernetes.io/serviceaccount/token') as f:
+             first_line = f.readline()
+         
+         cluster["token"]=first_line
+         
+         outputText = template.render(cluster) 
+         print(outputText)
+         f=open("/mnt/localcluster.ctx","w")
+         f.write(outputText)
+         print ("\n")     
+
+
+      
+    
+    - name: create-context-files
+      image: image-registry.openshift-image-registry.svc:5000/openshift/tools:0.3
+      script: |
+        #!/usr/bin/python3
+        import sys
+        import ruamel.yaml
+        import jinja2  
+        from kubernetes import client, config
+        import base64
+        
+        config.load_kube_config(config_file="/mnt/localcluster.ctx")
+        v1 = client.CoreV1Api()
+        
+        
+        
+        yaml = ruamel.yaml.YAML(typ='safe')
+        with open('/config/config.yaml') as fp:
+          data = yaml.load(fp)
+         
+        for key, value in data.items():
+            print(str(key))
+        
+        
+        templateLoader = jinja2.FileSystemLoader(searchpath="/")
+        templateEnv = jinja2.Environment(loader=templateLoader)
+        TEMPLATE_FILE = "/config/context.j2"
+        template = templateEnv.get_template(TEMPLATE_FILE)
+        
+        clusters = data["leafclusters"]
+        for cluster in clusters:
+          secret = v1.read_namespaced_secret(cluster["sa-name"], cluster["sa-namespace"]) # get the secret 
+          
+          print(str(cluster["name"]))
+          cluster["ca"]=secret.data["ca.crt"]
+          tokenb64=secret.data["token"]
+          cluster["token"]=str(base64.b64decode(tokenb64)).removesuffix("'").removeprefix("b'")
+          #print(str(secret.data["ca.crt"]))
+          outputText = template.render(cluster) 
+          #print(outputText)
+          #f=open("/mnt/remote-"+cluster["name"]+".ctx","w")
+          ctxfile="/mnt/remote-"+"$(params.stage)"+".ctx"
+          f=open(ctxfile,"w")
+          f.write(outputText)
+          print("\nremote CTX written to ", ctxfile)
+
+#    - name: wait1
+#      image: image-registry.openshift-image-registry.svc:5000/openshift/tools:0.3
+#      script: |
+#          #!/usr/bin/env bash
+#          pip3 install ruamel.yaml
+#          i=0; while [ $i -le 5000 ]; do echo waiting...$i;   ((i++)); sleep 1; done      
+
+
+  
+
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: service-account-creation
+spec:
+  workspaces:
+  - name: shared-workspace
+    mountPath: /mnt/
+  params:
+    - name: aws
+      description: namespace in which the service account has to be created
+      type: string
+      default: "not set"
+    - name: stage
+      description: E,T,A,P-The environment for which the service account is to be created
+      type: string
+
+  stepTemplate:
+    name: service-account-creation
+    volumeMounts:
+      - mountPath: /config/config.yaml
+        name: config
+        readOnly: true
+        subPath: config.yaml
+      - mountPath: /config/secret.j2
+        name: secret
+        readOnly: true
+        subPath: secret.j2
+      - mountPath: /config/context.j2
+        name: context
+        readOnly: true
+        subPath: context.j2
+      - mountPath: /config/secretstore.j2
+        name: secretstore
+        readOnly: true
+        subPath: secretstore.j2
+    workingDir: /home/runner
+
+
+  volumes:
+  - configMap:
+      defaultMode: 420
+      name: sgconfig
+    name: config
+  - configMap:
+      defaultMode: 420
+      name: sgsecret
+    name: secret
+  - configMap:
+      defaultMode: 420
+      name: context
+    name: context
+  - configMap:
+      defaultMode: 420
+      name: secretstore
+    name: secretstore      
+  steps:
+
+ 
+    - name: create-sa
+      image: image-registry.openshift-image-registry.svc:5000/openshift/tools:0.3
+      imagePullPolicy: Always
+      script: |
+         #!/bin/bash
+         kubectl create namespace $(params.stage)-$(params.aws)
+         kubectl create sa eso -n $(params.stage)-$(params.aws)
+         echo "return code $?"
+
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: inject-secretstore
+spec:
+  workspaces:
+  - name: shared-workspace
+    mountPath: /mnt/
+  params:
+    - name: aws
+      description: namespace in which the service account has to be created
+      type: string
+      default: "not set"
+    - name: stage
+      description: E,T,A,P-The environment for which the service account is to be created
+      type: string
+  stepTemplate:
+    name: inject-secretstore
+    volumeMounts:
+      - mountPath: /config/config.yaml
+        name: config
+        readOnly: true
+        subPath: config.yaml
+      - mountPath: /config/secret.j2
+        name: secret
+        readOnly: true
+        subPath: secret.j2
+      - mountPath: /config/context.j2
+        name: context
+        readOnly: true
+        subPath: context.j2
+      - mountPath: /config/secretstore.j2
+        name: secretstore
+        readOnly: true
+        subPath: secretstore.j2
+    workingDir: /home/runner
+  volumes:
+  - configMap:
+      defaultMode: 420
+      name: sgconfig
+    name: config
+  - configMap:
+      defaultMode: 420
+      name: sgsecret
+    name: secret
+  - configMap:
+      defaultMode: 420
+      name: context
+    name: context
+  - configMap:
+      defaultMode: 420
+      name: secretstore
+    name: secretstore
+  steps:
+ 
+    - name: secretstore-templating
+      image: image-registry.openshift-image-registry.svc:5000/openshift/tools:0.3
+      imagePullPolicy: Always
+      script: |
+        #!/usr/bin/python3
+        import sys
+        import ruamel.yaml
+        import jinja2  
+        from kubernetes import client, config
+        import base64
+        templateLoader = jinja2.FileSystemLoader(searchpath="/")
+        templateEnv = jinja2.Environment(loader=templateLoader)
+        TEMPLATE_FILE = "/config/secretstore.j2"
+        template = templateEnv.get_template(TEMPLATE_FILE)
+        
+        secretstore = {}
+        secretstore["centralUrl"]="https://192.168.100.29:6443"
+        secretstore["centralNamespace"]="abn-hvp"
+        secretstore["remoteNamespace"]="hvp"
+        #https://openshift.default.svc.cluster.local
+        outputText = template.render(secretstore) 
+        print(outputText)
+        f=open("/mnt/secretstore.yaml","w")
+        f.write(outputText)
+        print ("\n")
+    #- name: wait
+    #  image: image-registry.openshift-image-registry.svc:5000/openshift/tools:0.3
+    #  script: |
+    #      #!/usr/bin/env bash
+    #      i=0; while [ $i -le 5000 ]; do echo waiting...$i;   ((i++)); sleep 1; done    
+    - name: secretstore-injection
+      image: image-registry.openshift-image-registry.svc:5000/openshift/tools:0.3
+      imagePullPolicy: Always
+      script: |
+        #!/bin/bash
+        ls -ltra /mnt
+        cat /mnt/remote-abn.ctx
+        oc apply -f /mnt/secretstore.yaml --kubeconfig=/mnt/remote-$(params.stage).ctx
+#        import ruamel.yaml
+#    - name: create-project
+#      image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+#      command: ["/bin/bash", "-c"]
+#      args:
+#        - |-
+#          oc new-project $(inputs.params.stage)-$(inputs.params.namespace)
+#          
+#    - name: create-sa
+#      image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+#      command: ["/bin/bash", "-c"]
+#      args:
+#        - |-
+#          oc create sa eso-sa -n $(inputs.params.stage)-$(inputs.params.namespace) 

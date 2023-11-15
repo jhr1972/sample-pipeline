@@ -1,0 +1,107 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: create-sa-pipeline
+spec:
+  workspaces:
+  - name: shared-workspace
+
+  params:
+  - name: stage
+  - name: aws
+  tasks:
+    - name: preparation
+      taskRef:
+        name: preparation
+      params:
+      - name: stage
+        value: $(params.stage)
+      - name: aws
+        value: $(params.aws)
+      workspaces:
+      - name: shared-workspace
+        workspace: shared-workspace
+
+    
+    - name: inject-secretstore
+      taskRef:
+        name: inject-secretstore
+      params:
+      - name: stage
+        value: $(params.stage)
+      - name: aws
+        value: $(params.aws)
+      workspaces:
+      - name: shared-workspace
+        workspace: shared-workspace
+      runAfter:
+      - preparation
+      
+    - name: service-account-creation
+      taskRef:
+        name: service-account-creation
+      params:
+      - name: stage
+        value: $(params.stage)
+      - name: aws
+        value: $(params.aws)
+      
+      workspaces:
+      - name: shared-workspace
+        workspace: shared-workspace    
+      runAfter:
+      - preparation
+#apiVersion: tekton.dev/v1beta1
+#kind: Pipeline
+#metadata:
+#  name: create-sa-pl
+#spec:
+#
+#  tasks:
+#  - name: create-serviceaccount
+#    taskRef:
+#      name: git-clone
+#      kind: ClusterTask
+#    workspaces:
+#    - name: output
+#      workspace: shared-workspace
+#    params:
+#    - name: url
+#      value: $(params.git-url)
+#    - name: subdirectory
+#      value: ""
+#    - name: deleteExisting
+#      value: "true"
+#    - name: revision
+#      value: $(params.git-revision)
+#  - name: build-image
+#    taskRef:
+#      name: buildah
+#      kind: ClusterTask
+#    params:
+#    - name: IMAGE
+#      value: $(params.IMAGE)
+#    workspaces:
+#    - name: source
+#      workspace: shared-workspace
+#    runAfter:
+#    - fetch-repository
+#  - name: apply-manifests
+#    taskRef:
+#      name: apply-manifests
+#    workspaces:
+#    - name: source
+#      workspace: shared-workspace
+#    runAfter:
+#    - build-image
+#  - name: update-deployment
+#    taskRef:
+#      name: update-deployment
+#    params:
+#    - name: deployment
+#      value: $(params.deployment-name)
+#    - name: IMAGE
+#      value: $(params.IMAGE)
+#    runAfter:
+#    - apply-manifests
+#

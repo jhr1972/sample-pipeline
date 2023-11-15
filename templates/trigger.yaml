@@ -1,0 +1,75 @@
+
+
+
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerTemplate
+metadata:
+  name: create-sa-template
+spec:
+  params:
+  - name: aws
+    description: the name of the AWS for which the service account has to be created
+  - name: stage
+    description: the stage into which the service account has to be distributed afterwards
+
+  resourcetemplates:
+  - apiVersion: tekton.dev/v1beta1
+    kind: PipelineRun
+    metadata:
+      generateName: create-sa-$(tt.params.stage)-$(tt.params.aws)-
+    spec:
+      serviceAccountName: pipeline
+      pipelineRef:
+        name: create-sa-pipeline
+      params:
+      - name: aws
+        value: $(tt.params.aws)
+      - name: stage
+        value: $(tt.params.stage)
+      podTemplate:
+        securityContext:
+          fsGroup: 65532
+      workspaces:
+      - name: shared-workspace
+        volumeClaimTemplate:
+          spec:
+            accessModes:
+              - ReadWriteMany
+            resources:
+              requests:
+                storage: 500Mi
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerBinding
+metadata:
+  name: create-sa-binding
+spec:
+  params:
+  - name: aws
+    value: $(body.aws)
+  - name: stage
+    value: $(body.stage)
+
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: Trigger
+metadata:
+  name: create-sa-trigger
+spec:
+#  serviceAccountName: pipeline
+
+  bindings:
+    - ref: create-sa-binding
+  template:
+    ref: create-sa-template
+
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: EventListener
+metadata:
+  name: create-sa-eventlistener
+spec:
+#  serviceAccountName: pipeline
+  triggers:
+    - triggerRef: create-sa-trigger
